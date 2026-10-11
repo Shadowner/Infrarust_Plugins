@@ -1,5 +1,6 @@
 pub mod ammh;
 pub mod cache;
+pub mod config;
 pub mod holepunch;
 pub mod login_data;
 pub mod mode;
