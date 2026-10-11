@@ -1,0 +1,2 @@
+[plugins.automodpack]
+permissions = ["connection-handoff", "plugin-messaging"]
