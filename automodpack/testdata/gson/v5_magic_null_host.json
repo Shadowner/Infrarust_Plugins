@@ -1,0 +1,9 @@
+{
+  "endpointPort": -1,
+  "secret": {
+    "secret": "Q2xhdWRlLWF1dG9tb2RwYWNrLWJyaWRnZS10ZXN0LXNlY3JldA",
+    "timestamp": 1760183415
+  },
+  "connectionMode": "MAGIC",
+  "requireModpack": true
+}

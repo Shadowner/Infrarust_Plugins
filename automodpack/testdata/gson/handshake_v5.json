@@ -1,0 +1,7 @@
+{
+  "loaders": [
+    "fabric"
+  ],
+  "amVersion": "5.0.0-rc.3",
+  "mcVersion": "1.21.10"
+}
