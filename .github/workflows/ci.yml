@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+defaults:
+  run:
+    shell: bash
+    working-directory: infrarust_plugins
+
+jobs:
+  plugins:
+    name: Plugins
+    runs-on: ubuntu-latest
+    outputs:
+      plugins: ${{ steps.matrix.outputs.plugins }}
+      smoke: ${{ steps.matrix.outputs.smoke }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: infrarust_plugins
+          persist-credentials: false
+
+      - name: Set up
+        uses: ./infrarust_plugins/.github/actions/setup
+
+      - name: List the plugins
+        id: matrix
+        run: scripts/plugins.sh matrix >> "$GITHUB_OUTPUT"
+
+      - name: Shellcheck the scripts
+        run: shellcheck scripts/*.sh
+
+      - name: Test the release tag rules
+        run: scripts/test-plugins.sh
+
+  check:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: infrarust_plugins
+          persist-credentials: false
+
+      - name: Set up
+        uses: ./infrarust_plugins/.github/actions/setup
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: infrarust_plugins -> target
+          shared-key: check
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check the plugin ids
+        run: scripts/plugins.sh check-ids
+
+      - name: Format
+        run: scripts/plugins.sh fmt
+
+      - name: Clippy
+        run: scripts/plugins.sh clippy
+
+      - name: Test
+        run: scripts/plugins.sh test
+
+  build:
+    name: Build ${{ matrix.id }}
+    needs: plugins
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plugins.outputs.plugins) }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: infrarust_plugins
+          persist-credentials: false
+
+      - name: Set up
+        uses: ./infrarust_plugins/.github/actions/setup
+
+      - name: Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: infrarust_plugins -> target
+          shared-key: build
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build
+        env:
+          ID: ${{ matrix.id }}
+        run: scripts/plugins.sh build "$ID"
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ matrix.id }}-${{ matrix.version }}
+          path: |
+            infrarust_plugins/dist/${{ matrix.id }}.wasm
+            infrarust_plugins/dist/${{ matrix.id }}.wasm.sha256
+          if-no-files-found: error
+
+  smoke:
+    name: Smoke ${{ matrix.id }}
+    needs: [plugins, build]
+    if: needs.plugins.outputs.smoke != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plugins.outputs.smoke) }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: infrarust_plugins
+          persist-credentials: false
+
+      - name: Set up
+        uses: ./infrarust_plugins/.github/actions/setup
+
+      - name: Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: infrarust_plugins/${{ matrix.smoke }} -> target
+          shared-key: smoke-${{ matrix.id }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Download the component
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ${{ matrix.id }}-${{ matrix.version }}
+          path: infrarust_plugins/dist
+
+      - name: Smoke
+        env:
+          ID: ${{ matrix.id }}
+        run: scripts/plugins.sh smoke --prebuilt "$ID"

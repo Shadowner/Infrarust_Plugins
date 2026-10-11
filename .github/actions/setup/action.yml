@@ -1,0 +1,37 @@
+name: Set up the plugin build
+description: Checks out Infrarust next to this repository at the ref named in Cargo.toml and installs the toolchain named there, with the wasm32-wasip2 target
+
+inputs:
+  components:
+    description: Extra rustup components, comma separated
+    required: false
+    default: ''
+
+outputs:
+  infrarust-ref:
+    description: The Infrarust ref the plugins build against
+    value: ${{ steps.config.outputs.infrarust-ref }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the build configuration
+      id: config
+      shell: bash
+      working-directory: ${{ github.action_path }}/../../..
+      run: scripts/plugins.sh config >> "$GITHUB_OUTPUT"
+
+    - name: Check out Infrarust
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: ${{ steps.config.outputs.infrarust-repository }}
+        ref: ${{ steps.config.outputs.infrarust-ref }}
+        path: Infrarust
+        persist-credentials: false
+
+    - name: Install the toolchain
+      uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      with:
+        toolchain: ${{ steps.config.outputs.toolchain }}
+        targets: wasm32-wasip2
+        components: ${{ inputs.components }}
