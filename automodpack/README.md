@@ -225,10 +225,22 @@ permissions = ["connection-handoff", "plugin-messaging"]
 | `event-bus`          | baseline: `ServerConnectedEvent` and `DisconnectEvent` |
 | `config-read`        | baseline: `Config::server_by_domain`, which resolves an AMMH host with the same domain routing as a handshake |
 
-Do not `deny` the two baseline capabilities. The plugin needs no `network` capability and no
-`[plugins.automodpack.wasm.network]` allow-list: every handoff targets a configured server (`Route`,
-`Server` or `ServerPort`), never an `Address`. Without a capability the plugin fails to enable and the log
-names the missing grant.
+Do not `deny` the two baseline capabilities. Every handoff targets a configured server (`Route`,
+`Server` or `ServerPort`), never an `Address`. HOLEPUNCH and MAGIC on the Minecraft port need nothing
+more. A dedicated modpack port (MAGIC or HTTP with a `bind-port`) is a `ServerPort` off the server's own
+port, which Infrarust only accepts from a WASM plugin when its network allow-list covers every address of
+that server on that port:
+
+```toml
+[plugins.automodpack]
+permissions = ["connection-handoff", "plugin-messaging", "network"]
+
+[plugins.automodpack.wasm.network]
+allow = ["10.0.0.5:24454"]
+```
+
+Without a capability the plugin fails to enable and the log names the missing grant. Without the allow
+rule, Infrarust ignores the dedicated-port handoff and logs a rate-limited warning.
 
 `[rate_limit]`, when enabled, counts every Minecraft handshake per IP, and a holepunch lane is one: an
 AutoModpack client opens about five lanes at once when it downloads. The default of 3 per 10 seconds
