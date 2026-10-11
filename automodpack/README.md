@@ -198,7 +198,8 @@ instance after a fault, so what it learned survives a recovery and a restart.
 
 ## Install
 
-Build the component (see [Building and testing](#building-and-testing)) and copy it to the top level of
+Download `automodpack.wasm` from an `automodpack-v<version>` release (see [Download](../README.md#download))
+or build the component (see [Building and testing](#building-and-testing)), and copy it to the top level of
 Infrarust's `plugins_dir`. The file name does not matter; the plugin id is `automodpack`:
 
 ```sh
