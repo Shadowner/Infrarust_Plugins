@@ -32,10 +32,11 @@ repository's automodpack plugin loaded into the proxy.
   --plugins-dir <dir>     WASM plugins (*.wasm) loaded into every cell named
                           <cell>+plugins. Default: this repository's
                           target/wasm32-wasip2/release/infrarust_plugin_automodpack.wasm
-  --plugin-config <file>  TOML appended to infrarust.toml of the +plugins cells.
-                          Default plugin.toml ([plugins.automodpack] permissions).
-  --plugin-data <dir>     Copied to plugins_dir/automodpack/ of the +plugins cells
-                          (for a config.json).
+  --plugin-config <file>  TOML appended to infrarust.toml of every +plugins cell.
+                          Default: plugin.toml ([plugins.automodpack] permissions),
+                          plus network and an allow rule for the dedicated-port cells.
+  --plugin-data <dir>     Copied to plugins_dir/automodpack/ of the +plugins cells,
+                          instead of the per-cell config.json.
   --work-dir <dir>        Rendered proxy configs and run output. Default ./.lab
   --hmc-cache <dir>       HeadlessMC cache shared with plain autotester runs.
                           Default <automodpack>/autotester/.hmc-cache

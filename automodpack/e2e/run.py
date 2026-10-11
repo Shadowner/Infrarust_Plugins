@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,7 @@ class Cell:
     plugins: bool = False
     amp_config: tuple = ()
     plugin_json: str = ""
+    plugin_toml: str = ""
 
 
 MODPACK_PORT = 25567
@@ -49,6 +51,12 @@ PORT_ADVERTISED = (("bindPort", MODPACK_PORT), ("advertisedEndpointPort", MODPAC
 PORT_HIDDEN = (("bindPort", MODPACK_PORT),)
 DECLARE_MAGIC = '{"servers": {"backend": {"mode": "magic"}}}'
 DECLARE_MAGIC_PORT = '{"servers": {"backend": {"mode": "magic", "port": %d}}}' % MODPACK_PORT
+ALLOW_MODPACK_PORT = f"""[plugins.{PLUGIN_ID}]
+permissions = ["connection-handoff", "plugin-messaging", "network"]
+
+[plugins.{PLUGIN_ID}.wasm.network]
+allow = ["{BACKEND.rsplit(':', 1)[0]}:{MODPACK_PORT}"]
+"""
 
 CELLS = {
     cell.id: cell
@@ -98,6 +106,7 @@ CELLS = {
             f"Offline mode, AutoModpack in MAGIC mode on a dedicated port {MODPACK_PORT} it advertises: without the plugin the lanes go "
             "straight to that port and never touch the proxy; with it the data packet is rewritten so they come back through the proxy.",
             amp_config=PORT_ADVERTISED,
+            plugin_toml=ALLOW_MODPACK_PORT,
         ),
         Cell(
             "offline-magic-hidden", "offline", "MAGIC", "fail", "direct-magic-port",
@@ -106,6 +115,7 @@ CELLS = {
             known="The lanes send AMMH to the proxy's port and are dropped when the handshake read times out. Needs the plugin (raw prefix claim + port declaration).",
             amp_config=PORT_HIDDEN,
             plugin_json=DECLARE_MAGIC_PORT,
+            plugin_toml=ALLOW_MODPACK_PORT,
         ),
         Cell(
             "client-only", "client_only", "HOLEPUNCH", "fail", "direct",
@@ -223,7 +233,10 @@ def render_proxy(home: Path, cell: Cell, args) -> Path:
             f'cache_dir = "{home / "wasm-cache"}"',
             "",
         ]
-        lines += [args.plugin_config.read_text(encoding="utf-8"), ""]
+        if args.plugin_config:
+            lines += [args.plugin_config.read_text(encoding="utf-8"), ""]
+        else:
+            lines += [cell.plugin_toml or DEFAULT_PLUGIN_CONFIG.read_text(encoding="utf-8"), ""]
     config = home / "infrarust.toml"
     config.write_text("\n".join(lines), encoding="utf-8")
     (home / "servers" / "backend.toml").write_text(
@@ -304,7 +317,8 @@ GAME_NOISE = re.compile(
 CAUSE = re.compile(r"^(\S+(Exception|Error|Failure)\b.*|\s+at pl\.skidam\..*)$")
 PROXY_READY = "infrarust is ready"
 PROXY_SIGNAL = re.compile(
-    r"(WARN|ERROR|session started|session ended|client disconnected|connection error|refus|reject|layout=Mismatched)"
+    r"(WARN|ERROR|session started|session ended|client disconnected|connection error|refus|reject|layout=Mismatched|"
+    r"plugin=automodpack|claimed by a plugin|handed off|handed-off)"
 )
 
 
@@ -345,6 +359,8 @@ PLAYER = "AutoTest"
 
 
 CONNECTION_ERROR = re.compile(r"connection error .*?error=\"([^\"]*)\"")
+HANDOFF = re.compile(r"connection handed off .*?\blevel=(\w+)")
+HANDOFF_BYTES = re.compile(r"handed-off connection ended .*?\bb2c=(\d+)")
 
 
 def proxy_sessions(path: Path | None) -> dict:
@@ -357,6 +373,8 @@ def proxy_sessions(path: Path | None) -> dict:
         "player": sum(1 for n in names if n == PLAYER),
         "lanes": sum(1 for n in names if n != PLAYER),
         "lenient_login_starts": text.count("layout=Mismatched"),
+        "handoffs": dict(Counter(HANDOFF.findall(text))),
+        "handoff_bytes_to_client": sum(int(n) for n in HANDOFF_BYTES.findall(text)),
         "connection_errors": len(errors),
         "first_connection_error": errors[0] if errors else "",
     }
@@ -547,7 +565,9 @@ def render(cases: list[Case], cells: list[Cell], meta: dict) -> str:
             if not case or case.status == "skip":
                 glyphs.append(GLYPH["skip"])
                 continue
+            handoffs = sum((case.sessions.get("handoffs") or {}).values())
             seen = f" · {case.sessions.get('player', 0)}p/{case.sessions.get('lanes', 0)}l" if case.cell.proxy else ""
+            seen += f"/{handoffs}h" if handoffs else ""
             glyphs.append(f"{GLYPH[case.status]} {case.duration:.0f}s{seen}")
         lines.append(f"| {target} | {scenario} | {' | '.join(glyphs)} |")
     lines += [
@@ -555,9 +575,10 @@ def render(cases: list[Case], cells: list[Cell], meta: dict) -> str:
         "✅ passed as expected · ❌ failed, expected to pass · ⚠️ known gap, failed as expected ·",
         "🎉 expected to fail but passed (update the expectation) · ❔ untrusted, its control failed too · ⏭️ skipped",
         "",
-        "`Np/Ml`: sessions the proxy logged for the player (`AutoTest`) and for every other login name,",
-        "which are AutoModpack HOLEPUNCH lanes (random names carrying the marker UUID). A proxied cell",
-        "that passes without a player session is failed: the client never went through Infrarust.",
+        "`Np/Ml/Kh`: sessions the proxy logged for the player (`AutoTest`) and for every other login name,",
+        "which are AutoModpack HOLEPUNCH lanes (random names carrying the marker UUID), then the",
+        "connections the plugin claimed and handed off to the backend (`h`, shown when there are any).",
+        "A proxied cell that passes without a player session is failed: the client never went through Infrarust.",
         "",
         "## Cells",
         "",
@@ -574,16 +595,17 @@ def render(cases: list[Case], cells: list[Cell], meta: dict) -> str:
             "",
             "## What the proxy saw",
             "",
-            "| target | scenario | cell | player sessions | lane sessions | lenient Login Starts | connection errors |",
-            "|---|---|---|---|---|---|---|",
+            "| target | scenario | cell | player sessions | lane sessions | lenient Login Starts | plugin handoffs | bytes to client over handoffs | connection errors |",
+            "|---|---|---|---|---|---|---|---|---|",
         ]
         for case in sorted(proxied, key=lambda c: (c.scenario, c.target, c.cell.id)):
             seen = case.sessions
             error = seen.get("first_connection_error", "")
             errors = f"{seen.get('connection_errors', 0)}" + (f" (`{shorten(error, 90)}`)" if error else "")
+            handoffs = ", ".join(f"{n} {level}" for level, n in sorted((seen.get("handoffs") or {}).items())) or "0"
             lines.append(
                 f"| {case.target} | {case.scenario} | `{case.cell.id}` | {seen.get('player', 0)} | {seen.get('lanes', 0)} | "
-                f"{seen.get('lenient_login_starts', 0)} | {errors} |"
+                f"{seen.get('lenient_login_starts', 0)} | {handoffs} | {seen.get('handoff_bytes_to_client', 0)} | {errors} |"
             )
     noted = [c for c in cases if c.status in ("fail", "known", "untrusted", "fixed")]
     if noted:
@@ -648,7 +670,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=25580)
     parser.add_argument("--log-level", default="info,infrarust_core=debug")
     parser.add_argument("--plugins-dir", type=Path)
-    parser.add_argument("--plugin-config", type=Path, default=DEFAULT_PLUGIN_CONFIG)
+    parser.add_argument("--plugin-config", type=Path)
     parser.add_argument("--plugin-data", type=Path)
     parser.add_argument("--infrarust", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, default=HERE / ".lab")
@@ -683,7 +705,7 @@ def main() -> int:
                 f"cells ending in {PLUGIN_SUFFIX} need the plugin: build it with --build-plugin or pass --plugins-dir "
                 f"(missing {', '.join(missing_wasm)})"
             )
-        if not args.plugin_config.is_file():
+        if args.plugin_config and not args.plugin_config.is_file():
             parser.error(f"--plugin-config {args.plugin_config} does not exist")
         if args.plugin_data and not args.plugin_data.is_dir():
             parser.error(f"--plugin-data {args.plugin_data} is not a directory")

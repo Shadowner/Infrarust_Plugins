@@ -1,3 +1,4 @@
 .lab/
 .lab-*/
 reports/
+__pycache__/

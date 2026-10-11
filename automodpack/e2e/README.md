@@ -71,14 +71,24 @@ player joined, the proxy's).
 Appending `+plugins` to a proxied cell (`offline+plugins`) copies the plugin
 into that proxy's `plugins_dir`, appends `plugin.toml` (the
 `[plugins.automodpack]` permissions) to its `infrarust.toml`, and expects the
-cell to pass. Two cells also write the plugin's `config.json`, because the
-plugin cannot learn what it needs from the data packet there:
-`passthrough-magic+plugins` declares the backend `magic` (a forwarding mode never
-shows the plugin the login queries), `offline-magic-hidden+plugins` declares
-`magic` on port 25567 (the backend advertises `-1`). `--plugins-dir` replaces the
-default `target/wasm32-wasip2/release/infrarust_plugin_automodpack.wasm`,
-`--plugin-config` replaces `plugin.toml`, and `--plugin-data DIR` replaces the
-per-cell `config.json` with a directory copied to `plugins_dir/automodpack/`.
+cell to pass. Some cells need more than the defaults:
+
+- `passthrough-magic+plugins` writes a `config.json` declaring the backend
+  `magic`: a forwarding mode never shows the plugin the login queries, so it
+  cannot learn the mode.
+- `offline-magic-hidden+plugins` declares `magic` on port 25567, since the
+  backend advertises `-1`.
+- both dedicated-port cells (`offline-magic-port+plugins`,
+  `offline-magic-hidden+plugins`) grant `network` and allow
+  `127.0.0.1:25567` under `[plugins.automodpack.wasm.network]`: Infrarust only
+  takes a handoff to a port other than the server's own from a plugin whose
+  allow-list covers it.
+
+`--plugins-dir` replaces the default
+`target/wasm32-wasip2/release/infrarust_plugin_automodpack.wasm`,
+`--plugin-config FILE` replaces the TOML of every `+plugins` cell, and
+`--plugin-data DIR` replaces the per-cell `config.json` with a directory copied
+to `plugins_dir/automodpack/`.
 
 `--cells` takes cell names and three groups: `plain` (every runnable cell
 without the plugin, the default), `plugins` (every proxied cell with `+plugins`)
@@ -104,10 +114,12 @@ client restart with the pack loaded, a server restart and an in-game rejoin.
 A proxied cell must also show the player in the proxy's own log: a pass without
 a `session started` for `AutoTest` is failed, because the client then never went
 through Infrarust. The grid prints the sessions the proxy logged for the player
-and for every other login name (`1p/1l`); the other names are HOLEPUNCH lanes,
-which use random names. A "What the proxy saw" table adds, per proxied cell, the
-Login Starts accepted with a layout that does not match their protocol (the
-lanes on 1.20.1) and the first connection error.
+and for every other login name (`1p/1l`), the other names being HOLEPUNCH lanes
+(random names), then the connections the plugin claimed and handed off to the
+backend (`/1h`). A "What the proxy saw" table adds, per proxied cell, the Login
+Starts accepted with a layout that does not match their protocol (the lanes on
+1.20.1), the handoffs by level (`login` or `raw`), the bytes the backend sent
+the client over them, and the first connection error.
 
 Proxied cells whose control (`direct`, or `direct-magic` for the MAGIC cells)
 failed on the same target are reported untrusted rather than failed. Each
@@ -124,11 +136,14 @@ a cell expected to fail passed (update its expectation in `run.py`).
 Measured on the first runs: the client image is 1.12 GB (about 6 min to build,
 mostly HeadlessMC's Gradle build), the `itzg/minecraft-server` java17 and java21
 images are about 0.8 GB each, the HeadlessMC cache (Minecraft, loaders, assets,
-shared with plain autotester runs through `--hmc-cache`) about 0.7 GB per target,
-and each target keeps a server volume. The one-jar for three targets builds in
-about 6 min. A passing cell takes 35 to 110 s once warm, a failing one about
-4 min, because the scenario waits 180 s for a certificate prompt the client
-never reaches.
+shared with plain autotester runs through `--hmc-cache`) 1.3 GB for the three
+targets, and each target keeps a server volume (130 to 170 MB). The one-jar for three
+targets builds in about 6 min, the Infrarust release binary in 5 to 11 min. A
+passing cell takes 25 to 45 s once warm, a failing one about 4 min, because the
+scenario waits 180 s for a certificate prompt the client never reaches: the
+full `--cells all` grid on three targets is 51 runs in about 66 min, the `sync`
+run below 12 runs in 14 min. Each run directory keeps the client's game
+directory, about 35 MB per cell.
 
 ## Traps
 
@@ -144,3 +159,81 @@ never reaches.
   listens on IPv4 only.
 - Interrupting with Ctrl-C lets the autotester remove its containers; a second
   Ctrl-C can leave `amp-*` containers behind (`podman rm -f`).
+
+## Results, 2026-10-11
+
+Infrarust `feat/intercepted_modded_support` at `6b72d0d5`, AutoModpack
+5.0.0-rc.3 (`infrarust-autotest`, one-jar with 1.20.1-fabric, 1.20.1-forge and
+1.21.11-fabric), the plugin built from `main`. `download-only`, every cell
+(`--cells all`), 51 runs in 66 min: ✅ 39, ⚠️ 12, nothing unexpected.
+
+| cell | 1.20.1-fabric | 1.20.1-forge | 1.21.11-fabric |
+|---|---|---|---|
+| `direct`, `direct-magic`, `direct-magic-port` | ✅ ✅ ✅ | ✅ ✅ ✅ | ✅ ✅ ✅ |
+| `passthrough`, `zerocopy` | ✅ ✅ | ✅ ✅ | ✅ ✅ |
+| `passthrough-magic` | ⚠️ | ⚠️ | ⚠️ |
+| `offline` | ⚠️ | ⚠️ | ⚠️ |
+| `offline-magic` | ⚠️ | ⚠️ | ⚠️ |
+| `offline-magic-port` | ✅ (lanes skip the proxy) | ✅ | ✅ |
+| `offline-magic-hidden` | ⚠️ | ⚠️ | ⚠️ |
+| every `+plugins` cell (7) | ✅ | ✅ | ✅ |
+
+The run at `35716be4` (first commit where every hook fires, before the review
+fixes) gave the same 51 verdicts, the same handoff counts and the same errors.
+The seven plain cells of the first grid, on the branch before the hooks
+(`89d46057`), gave 12 ✅ and 9 ⚠️, the same as today.
+
+What the proxy logged, per family:
+
+- `passthrough` and `zerocopy`: one session for the player and one for the
+  HOLEPUNCH lane. On 1.20.1 the lane's Login Start does not match protocol 763
+  and is forwarded unchanged (`login start does not match its protocol layout,
+  forwarding it unchanged`). With the plugin loaded nothing changes: a
+  forwarding mode never shows the plugin the data packet, so it leaves the lane
+  to the normal path.
+- `offline`, 1.20.1 (Fabric and Forge): the proxy logs the player in, the
+  bridged login carries the AutoModpack queries to the client (its log prints
+  `AutoModpack endpoint: localhost:25580`), then the lane dies at its Login
+  Start: `connection error ... error="protocol error: invalid: bool value must
+  be 0 or 1"` (the strict decode reads the 1.20.2+ layout as 1.20.1's). Client:
+  `HolepunchFailure: server closed during negotiation`.
+- `offline`, 1.21.11: the layouts agree, so the proxy logs the lane in as a
+  second player and opens a backend login for it. The backend recognises the
+  marker (`marker accepted name=2y0isjoiovcjm`) and starts its takeover, which
+  the proxy cannot relay: ten seconds later `backend dropped the player`, server
+  `HolepunchFailure: Minecraft channel closed`, client `waiting for takeover
+  query` then `connect failed`.
+- every MAGIC cell whose lanes reach the proxy without the plugin
+  (`passthrough-magic`, `offline-magic`, `offline-magic-hidden`): the proxy
+  reads `AMMH` as the start of a handshake and drops it when the read times out,
+  `connection error ... error="connection timeout: handshake read timed out"`;
+  the client fails in `LaneConnector.performMagicHandshake` on
+  `java.io.EOFException`.
+- `offline-magic-port` passes without the plugin because the client downloads
+  from `localhost:25567` directly; only the login crosses the proxy.
+- with the plugin: `offline+plugins` shows `login claimed by a plugin` then
+  `connection handed off ... level=login replayed=49`; the MAGIC cells show one
+  `connection handed off ... level=raw replayed=15` each, to `backend`
+  (shared port) or to `server backend port 25567`. In `offline-magic-port+plugins`
+  the plugin learns the advertised port from the data packet
+  (`backend serves AutoModpack 5.0.0-rc.3 in MAGIC mode, advertising (connection host):25567`)
+  and rewrites it, so the client's endpoint becomes `localhost:25580` instead of
+  `localhost:25567` and the lanes come back through the proxy. About 5.8 KB
+  (MAGIC) and 6.0 KB (HOLEPUNCH) went to the client over each handoff.
+
+`sync` (`--scenarios sync --cells direct,passthrough,offline+plugins,offline-magic+plugins`),
+12 runs, all ✅. After the download the client restarts with the pack, the
+server restarts, and the client rejoins and reaches the world: the server logs
+`AutoTest joined the game` through the proxy, offline mode included. The proxy
+saw two player sessions per cell and three lanes: the first download, one lane
+the restarted client opens at boot with the endpoint it saved (before any
+login), and one during the rejoin. With the plugin, all three are handoffs
+(`login claimed by a plugin` + `connection handed off ... level=login`, or
+`level=raw` for MAGIC).
+
+The allow-list rule holds: `offline-magic-hidden+plugins` with plain
+`plugin.toml` (no `network`, no allow rule) fails as it should, the proxy
+logging `wasm plugin set a result it is not allowed to set; ignoring it ...
+reason="the plugin's network allow-list does not permit the server-port target
+on every address of that server"`, after which the AMMH bytes fall through to
+the handshake parser and time out ten seconds later.
