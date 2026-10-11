@@ -1,0 +1,28 @@
+[package]
+name = "infrarust-plugin-automodpack-smoke"
+version = "0.1.0"
+description = "Loads the AutoModpack bridge component into the Infrarust WASM host and drives its events"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+build = "build.rs"
+
+[workspace]
+
+[dev-dependencies]
+infrarust-plugin-automodpack = { path = ".." }
+infrarust-api = { path = "../../../Infrarust/crates/infrarust-api", features = ["test-util"] }
+infrarust-core = { path = "../../../Infrarust/crates/infrarust-core", features = ["test-support"] }
+infrarust-loader-wasm = { path = "../../../Infrarust/crates/infrarust-loader-wasm", features = ["wasm"] }
+infrarust_config = { path = "../../../Infrarust/crates/infrarust_config" }
+bytes = "1.12.1"
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "time"] }
+toml = "1.1.6"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "allow"
+expect_used = "allow"
