@@ -6,6 +6,12 @@ members = ["automodpack"]
 edition = "2024"
 rust-version = "1.99"
 publish = false
+repository = "https://github.com/Shadowner/Infrarust_Plugins"
+
+[workspace.metadata.infrarust]
+repository = "https://github.com/Shadowner/Infrarust"
+ref = "feat/intercepted_modded_support"
+toolchain = "nightly-2026-09-27"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

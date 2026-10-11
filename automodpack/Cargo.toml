@@ -5,6 +5,12 @@ description = "Infrarust plugin that bridges AutoModpack modpack downloads throu
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+repository.workspace = true
+
+[package.metadata.infrarust-plugin]
+id = "automodpack"
+permissions = ["connection-handoff", "plugin-messaging"]
+smoke = { path = "smoke", component-env = "AUTOMODPACK_WASM" }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
