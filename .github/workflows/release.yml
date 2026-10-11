@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*-v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+defaults:
+  run:
+    shell: bash
+    working-directory: infrarust_plugins
+
+jobs:
+  build:
+    name: Build ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.plugin.outputs.id }}
+      version: ${{ steps.plugin.outputs.version }}
+      prerelease: ${{ steps.plugin.outputs.prerelease }}
+      smoke: ${{ steps.plugin.outputs.smoke }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: infrarust_plugins
+          persist-credentials: false
+
+      - name: Set up
+        uses: ./infrarust_plugins/.github/actions/setup
+
+      - name: Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: infrarust_plugins -> target
+          shared-key: build
+          save-if: false
+
+      - name: Resolve the plugin from the tag
+        id: plugin
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/plugins.sh resolve-tag "$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check the plugin id
+        env:
+          ID: ${{ steps.plugin.outputs.id }}
+        run: scripts/plugins.sh check-ids "$ID"
+
+      - name: Test
+        env:
+          ID: ${{ steps.plugin.outputs.id }}
+        run: scripts/plugins.sh test "$ID"
+
+      - name: Build
+        env:
+          ID: ${{ steps.plugin.outputs.id }}
+        run: scripts/plugins.sh build "$ID"
+
+      - name: Write the release notes
+        env:
+          ID: ${{ steps.plugin.outputs.id }}
+        run: scripts/plugins.sh notes "$ID" > dist/release-notes.md
+
+      - name: Upload the component
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.plugin.outputs.id }}-${{ steps.plugin.outputs.version }}
+          path: |
+            infrarust_plugins/dist/${{ steps.plugin.outputs.id }}.wasm
+            infrarust_plugins/dist/${{ steps.plugin.outputs.id }}.wasm.sha256
+          if-no-files-found: error
+
+      - name: Upload the release notes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-notes
+          path: infrarust_plugins/dist/release-notes.md
+          if-no-files-found: error
+
+  smoke:
+    name: Smoke ${{ needs.build.outputs.id }}
+    needs: build
+    if: needs.build.outputs.smoke != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: infrarust_plugins
+          persist-credentials: false
+
+      - name: Set up
+        uses: ./infrarust_plugins/.github/actions/setup
+
+      - name: Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: infrarust_plugins/${{ needs.build.outputs.smoke }} -> target
+          shared-key: smoke-${{ needs.build.outputs.id }}
+          save-if: false
+
+      - name: Download the component
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ${{ needs.build.outputs.id }}-${{ needs.build.outputs.version }}
+          path: infrarust_plugins/dist
+
+      - name: Smoke
+        env:
+          ID: ${{ needs.build.outputs.id }}
+        run: scripts/plugins.sh smoke --prebuilt "$ID"
+
+  publish:
+    name: Publish ${{ github.ref_name }}
+    needs: [build, smoke]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.smoke.result == 'success' || needs.smoke.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+        working-directory: dist
+    steps:
+      - name: Download the component
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ${{ needs.build.outputs.id }}-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Download the release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: release-notes
+          path: dist
+
+      - name: Verify the checksum
+        env:
+          ID: ${{ needs.build.outputs.id }}
+        run: sha256sum -c "$ID.wasm.sha256"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          ID: ${{ needs.build.outputs.id }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          flags=(--verify-tag --latest=false --title "$ID $VERSION" --notes-file release-notes.md)
+          if [[ $PRERELEASE == true ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" "${flags[@]}" "$ID.wasm" "$ID.wasm.sha256"
